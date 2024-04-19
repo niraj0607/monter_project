@@ -114,7 +114,7 @@ router.post('/login', async (req, res) => {
 router.post('/verify', async (req, res) => {
     const { email, otp, location, age, work } = req.body;
     try {
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ email }).select('-password');
         if (!user) return res.status(404).send('User not found.');
         if (user.otp === otp) {
             user.isVerified = true;
