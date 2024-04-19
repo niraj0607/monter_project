@@ -2,8 +2,41 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const nodemailer = require('nodemailer');
+const jwt = require('jsonwebtoken');
 
 const router = express.Router();
+
+// Middleware to authenticate JWT
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (token == null) return res.sendStatus(401);
+
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+        if (err) return res.sendStatus(403);
+        req.user = user;
+        next();
+    });
+};
+
+// Route to get user information
+router.get('/user-info', authenticateToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user._id).select('-password');
+        if (!user) {
+            return res.status(404).send('User not found.'); 
+        }
+        res.json(user); 
+    } catch (error) {
+        console.log(error); 
+        if (!res.headersSent) { 
+            res.status(500).json({ message: 'Error retrieving user data', error });
+        }
+    }
+});
+
+
 
 // Helper to send OTP
 async function sendOTP(email, otp) {
@@ -29,11 +62,15 @@ router.post('/register', async (req, res) => {
     try {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-
-        const newUser = new User({ email, password: hashedPassword });
-        await newUser.save();
-
         const otp = Math.floor(100000 + Math.random() * 900000);
+
+        const newUser = new User(
+            { 
+                email, 
+                password: hashedPassword,
+                otp
+            });
+        await newUser.save();
         await sendOTP(email, otp);
 
         res.status(201).send('User registered and OTP sent');
@@ -54,27 +91,39 @@ router.post('/login', async (req, res) => {
 
         if (!user.isVerified) return res.status(401).send('Account not verified.');
 
-        const token = jwt.sign({ _id: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-        res.header('auth-token', token).send({ token });
+        try {
+            const token = jwt.sign(
+                { _id: user._id },
+                process.env.JWT_SECRET,
+                { expiresIn: '1h' }
+            );
+            
+            res.header('auth-token', token).send({ token });
+        } catch (err) {
+            console.error('Error generating JWT:', err);
+            res.status(500).send('Internal Server Error');
+        }
     } catch (err) {
-        res.status(500).json(err);
+        console.error('Server error:', err);
+        res.status(500).json({ message: 'Error logging in', err });
     }
 });
 
-// Verify User
+
+// Verify and Update User
 router.post('/verify', async (req, res) => {
-    const { email, otp } = req.body;
+    const { email, otp, location, age, work } = req.body;
     try {
         const user = await User.findOne({ email });
         if (!user) return res.status(404).send('User not found.');
-
         if (user.otp === otp) {
             user.isVerified = true;
-            user.otp = null; // Clear OTP after successful verification
+            user.otp = null;  // Clear OTP
+            user.profile = { location, age, work };
             await user.save();
-            res.send('Account verified successfully.');
+            return res.json({ message: 'Account verified and profile updated successfully.', user: user });
         } else {
-            res.status(400).send('Invalid OTP.');
+            return res.status(400).send('Invalid OTP.');
         }
     } catch (err) {
         res.status(500).json(err);
